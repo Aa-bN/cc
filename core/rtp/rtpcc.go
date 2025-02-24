@@ -39,16 +39,17 @@ func NewRTPConfig() *RTPConfig {
 	initialTimestamp := uint32(time.Now().UnixNano() / 1000000)
 
 	return &RTPConfig{
-		Version:          2,
-		Padding:          false,
-		Extension:        false,
-		Marker:           false,
-		PayloadType:      96,
-		SequenceNumber:   0,
-		Timestamp:        initialTimestamp,
-		SSRC:             generateSSRC(),
-		CSRC:             make([]uint32, 0),
-		ExtensionProfile: 0xBEDE,
+		Version:        2,
+		Padding:        false,
+		Extension:      false,
+		Marker:         false,
+		PayloadType:    96,
+		SequenceNumber: 0,
+		Timestamp:      initialTimestamp,
+		SSRC:           generateSSRC(),
+		CSRC:           make([]uint32, 0),
+		// ExtensionProfile: 0xBEDE,
+		ExtensionProfile: 0x1000,
 	}
 }
 
@@ -72,19 +73,28 @@ func CreateRTPPacket(config *RTPConfig, payload []byte, message []byte) (*rtp.Pa
 	// 存在扩展头数据时添加扩展头
 	if len(message) > 0 {
 		packet.Header.Extension = true
-		packet.SetExtension(1, message)
+		// packet.SetExtension(1, message)
+		fragID := uint16(0)
+		totalFrags := uint16(1)
+		fragInfoBytes := make([]byte, 4)
+		binary.BigEndian.PutUint16(fragInfoBytes[0:2], fragID)
+		binary.BigEndian.PutUint16(fragInfoBytes[2:4], totalFrags)
+		packet.SetExtension(1, fragInfoBytes)
+		packet.SetExtension(2, message)
 	}
 
 	return packet, nil
 }
 
 func ExtractData(packet *rtp.Packet) ([]byte, []byte, error) {
-	IDs := packet.Header.GetExtensionIDs()
+	// IDs := packet.Header.GetExtensionIDs()
 	var extensionPayload []byte
 
-	if len(IDs) > 0 {
-		extensionPayload = packet.GetExtension(IDs[0])
-	}
+	// if len(IDs) > 0 {
+	// 	extensionPayload = packet.GetExtension(IDs[0])
+	// }
+
+	extensionPayload = packet.GetExtension(2)
 
 	return packet.Payload, extensionPayload, nil
 }

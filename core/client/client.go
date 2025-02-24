@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"cc/core/fragment"
 	rtpcc "cc/core/rtp"
 	"fmt"
 	"net"
@@ -17,6 +18,7 @@ type Client struct {
 	config     *rtpcc.RTPConfig
 	buffer     []byte
 	remoteAddr *net.UDPAddr
+	fragmenter *fragment.RTPFragmenter
 }
 
 func GetClientConfigSSRC(cli *Client) (uint32, error) {
@@ -46,12 +48,15 @@ func NewClient(localPort int, remoteAddr string, remotePort int) (*Client, error
 		return nil, fmt.Errorf("error creating send connection: %v", err)
 	}
 
+	rtpCfg := rtpcc.NewRTPConfig()
 	return &Client{
-		sendConn:   sendConn,
-		recvConn:   recvConn,
-		config:     rtpcc.NewRTPConfig(),
-		buffer:     make([]byte, 1500),
+		sendConn: sendConn,
+		recvConn: recvConn,
+		// config:     rtpcc.NewRTPConfig(),
+		config:     rtpCfg,
+		buffer:     make([]byte, 4096),
 		remoteAddr: remoteUDPAddr,
+		fragmenter: fragment.NewRTPFragmenter(rtpCfg),
 	}, nil
 }
 
@@ -65,6 +70,7 @@ func (c *Client) Close() {
 }
 
 func (c *Client) SendMessage(message string) error {
+	/* v0.0.1，未分片
 	packet, err := rtpcc.CreateRTPPacket(c.config, nil, []byte(message))
 	if err != nil {
 		return fmt.Errorf("error creating RTP packet: %v", err)
@@ -83,9 +89,30 @@ func (c *Client) SendMessage(message string) error {
 	c.config.SequenceNumber++
 	c.config.UpdateTimestamp()
 	return nil
+	*/
+	packets, err := c.fragmenter.Fragment([]byte(message))
+	if err != nil {
+		return fmt.Errorf("error fragmenting message: %v", err)
+	}
+
+	for _, packet := range packets {
+		rawPacket, err := packet.Marshal()
+		if err != nil {
+			return fmt.Errorf("error marshaling packet: %v", err)
+		}
+
+		_, err = c.sendConn.Write(rawPacket)
+		if err != nil {
+			return fmt.Errorf("error sending packet: %v", err)
+		}
+	}
+
+	c.config.UpdateTimestamp()
+	return nil
 }
 
 func (c *Client) ReceiveMessage() (string, *rtp.Header, error) {
+	/* v0.0.1，未分片
 	n, _, err := c.recvConn.ReadFromUDP(c.buffer)
 	if err != nil {
 		return "", nil, fmt.Errorf("error reading from UDP: %v", err)
@@ -109,6 +136,28 @@ func (c *Client) ReceiveMessage() (string, *rtp.Header, error) {
 	}
 
 	return message, &packet.Header, nil
+	*/
+	n, _, err := c.recvConn.ReadFromUDP(c.buffer)
+	if err != nil {
+		return "", nil, fmt.Errorf("error reading from UDP: %v", err)
+	}
+
+	packet := &rtp.Packet{}
+	if err := packet.Unmarshal(c.buffer[:n]); err != nil {
+		return "", nil, fmt.Errorf("error unmarshaling packet: %v", err)
+	}
+
+	message, complete, err := c.fragmenter.Process(packet)
+	if err != nil {
+		return "", nil, fmt.Errorf("error processing packet: %v", err)
+	}
+
+	if !complete {
+		// 还未收到完整消息，继续等待
+		return "", &packet.Header, nil
+	}
+
+	return string(message), &packet.Header, nil
 }
 
 func (c *Client) StartSending(wg *sync.WaitGroup) {
